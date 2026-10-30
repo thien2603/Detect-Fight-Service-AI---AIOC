@@ -60,6 +60,123 @@ MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 SNAPSHOT_MAX_BYTES = 200 * 1024 * 1024
 
 
+class AiZonesConfig:
+    """Nhận cấu hình vùng/vạch của một camera, không cắt ảnh đầu vào VD-MIL.
+
+    Luồng: kiểm tra đúng camera → parse JSON/tombstone → kiểm tra điểm 0..1 →
+    thay toàn bộ danh sách tương ứng. Payload sai giữ cấu hình tốt trước đó.
+    Lines được nhận/lưu để đáp ứng hợp đồng; FIGHT không áp luật đếm IN/OUT.
+    """
+
+    def __init__(self, camera_code, camera_id=None):
+        self.camera_code, self.camera_id = camera_code, camera_id
+        self.polygons, self.lines = [], []
+        self.version = 0
+        self.received = False
+
+    @staticmethod
+    def points(values, minimum):
+        if not isinstance(values, list):
+            raise ValueError("points must be a list")
+        result = []
+        for point in values:
+            if not isinstance(point, dict):
+                raise ValueError("point must contain x/y")
+            xy = tuple(point.get(key) for key in ("x", "y"))
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                   or not 0 <= v <= 1 for v in xy):
+                raise ValueError("point coordinates must be finite numbers within 0..1")
+            if not result or xy != result[-1]:
+                result.append(xy)
+        if len(result) > 1 and result[0] == result[-1]:
+            result.pop()
+        if len(set(result)) < minimum:
+            raise ValueError("not enough distinct points")
+        return result
+
+    def update(self, payload, kind):
+        field = "lines" if kind == "lines" else "ai_zones"
+        def reject_constant(value):
+            raise ValueError("geometry JSON must not contain NaN/Infinity")
+        data = json.loads(payload, parse_constant=reject_constant) if payload else {field: []}
+        if not isinstance(data, dict) or not isinstance(data.get(field), list):
+            raise ValueError("invalid geometry payload")
+        if data.get("camera_code", self.camera_code) != self.camera_code:
+            raise ValueError("geometry belongs to another camera code")
+        if self.camera_id and data.get("camera_id", self.camera_id) != self.camera_id:
+            raise ValueError("geometry belongs to another camera UUID")
+        parsed = []
+        for zone in data[field]:
+            if not isinstance(zone, dict):
+                raise ValueError("zone must be an object")
+            if zone.get("is_active", True) is False:
+                continue
+            module = zone.get("ai_modules", MODULE)
+            modules = module if isinstance(module, list) else [module]
+            if MODULE not in modules:
+                continue
+            is_line = kind == "lines" or zone.get("shape_type") == "line_crossing"
+            # Line-crossing được nhận từ topic /lines riêng, không dùng làm polygon.
+            if kind != "lines" and is_line:
+                continue
+            line_data = zone.get("line") or {}
+            if is_line and not isinstance(line_data, dict):
+                raise ValueError("line must be an object")
+            values = line_data.get("points") if is_line else zone.get("points")
+            points = self.points(values, 2 if is_line else 3)
+            if is_line and len(points) != 2:
+                raise ValueError("line must have exactly two points")
+            if not is_line:
+                area = abs(sum(points[i][0] * points[(i+1) % len(points)][1]
+                               - points[(i+1) % len(points)][0] * points[i][1] for i in range(len(points)))) / 2
+                if area < 1e-8:
+                    raise ValueError("polygon must have nonzero area")
+            zone_id = zone.get("id")
+            if zone_id is not None:
+                if not isinstance(zone_id, str):
+                    raise ValueError("zone id must be a UUID string")
+                uuid.UUID(zone_id)
+            parsed.append({"id": zone_id, "name": str(zone.get("name", zone.get("code", ""))),
+                           "points": points, "direction_point": zone.get("direction_point", zone.get("point"))})
+        old = self.lines if kind == "lines" else self.polygons
+        changed = parsed != old
+        if kind == "lines":
+            self.lines = parsed
+        else:
+            self.polygons = parsed
+        self.received = True
+        if changed:
+            self.version += 1
+        return changed
+
+    @staticmethod
+    def contains(points, x, y):
+        # Ray casting, coi điểm trên biên là nằm trong vùng theo dõi.
+        inside = False
+        for a, b in zip(points, points[1:] + points[:1]):
+            cross = (x-a[0]) * (b[1]-a[1]) - (y-a[1]) * (b[0]-a[0])
+            if abs(cross) < 1e-9 and min(a[0],b[0])-1e-9 <= x <= max(a[0],b[0])+1e-9 and min(a[1],b[1])-1e-9 <= y <= max(a[1],b[1])+1e-9:
+                return True
+            if (a[1] > y) != (b[1] > y):
+                if x < (b[0]-a[0]) * (y-a[1]) / (b[1]-a[1]) + a[0]:
+                    inside = not inside
+        return inside
+
+    def event_people(self, detections):
+        # Bbox/clip vẫn toàn ảnh; khi có polygon, chỉ cho cảnh báo nếu đủ người
+        # trong cùng một polygon. Đây không phải định vị hành vi đánh nhau.
+        if not self.polygons:
+            return len(detections), None
+        counts = [(sum(self.contains(zone["points"], (d["bbox"][0]+d["bbox"][2])/2, d["bbox"][3])
+                       for d in detections), zone) for zone in self.polygons]
+        return max(counts, key=lambda item: item[0])
+
+    def status(self):
+        return {"received": self.received, "version": self.version,
+                "polygon_count": len(self.polygons), "line_count": len(self.lines),
+                "polygons": self.polygons, "lines": self.lines}
+
+
 class FightGate:
     """Xác nhận theo giây; một vụ một lần, không nối thời gian qua mất dữ liệu."""
 
@@ -140,11 +257,11 @@ class LogRetention:
     """Tổng log/JSON >200 MiB: xóa file cũ nhất đến khi còn <=50%.
 
     Chỉ quét file trực tiếp trong output, không đụng snapshots hoặc thư mục khác.
-    File log đang mở và ba file trạng thái hiện tại luôn được bảo vệ.
+    File log đang mở và các file trạng thái hiện tại luôn được bảo vệ.
     """
 
     PROTECTED = {"log.jsonl", "health.json", "latest_payload.json", "effective_bbox.schema.json",
-                 "event_state.json", "latest_event.json"}
+                 "event_state.json", "latest_event.json", "zones.json"}
 
     def __init__(self, directory, max_bytes=LOG_TOTAL_MAX_BYTES):
         self.directory = Path(directory).absolute()
@@ -297,6 +414,8 @@ def main():
     parser.add_argument("--zone", type=int, default=os.getenv("VMS_ZONE_ID"), help="Zone lấy cấu hình từ broker")
     parser.add_argument("--organization", type=int, default=os.getenv("VMS_ORGANIZATION_ID"), help="Organization của camera trên IOC")
     parser.add_argument("--camera-id", default=os.getenv("VMS_CAMERA_ID"), help="UUID kỳ vọng; chặn nhầm camera trùng code ở IOC khác")
+    parser.add_argument("--client-id", default=os.getenv("VMS_MQTT_CLIENT_ID", "tts_thien_01"),
+                        help="Client ID riêng dạng tts_<ten>_01; chỉ chạy một instance cho mỗi ID")
     parser.add_argument("--detector-fps", type=float, default=30, help="Trần YOLO; chạy theo frame mới, sampler VD-MIL vẫn 8 FPS")
     parser.add_argument("--publish-fps", type=float, default=30, help="Trần gửi, không lặp bbox frame cũ; thực tế phụ thuộc FPS nguồn")
     parser.add_argument("--max-bbox-age-ms", type=float, default=200, help="Bỏ bbox quá cũ tính từ lúc đọc frame")
@@ -318,6 +437,8 @@ def main():
         parser.error("Cần cấu hình camera, zone, organization, broker-host qua CLI hoặc .env")
     if args.seconds < 0 or any(c in args.camera for c in "/#+"):
         parser.error("seconds phải >= 0; camera không chứa / # +")
+    if not args.client_id.startswith("tts_") or args.client_id.startswith("vms_staging_backend"):
+        parser.error("client-id phải có prefix tts_ và không dùng prefix backend")
     if not (0 < args.detector_fps <= 30 and 0 < args.publish_fps <= 30 and 0 < args.max_bbox_age_ms <= 500):
         parser.error("detector/publish FPS phải thuộc (0,30]; max-bbox-age-ms thuộc (0,500]")
     if not 0 <= args.decoder_threads <= 64:
@@ -394,7 +515,9 @@ def main():
     state = {"camera": None, "url": None, "enabled": False, "revision": 0,
              "frame": None, "seq": 0, "captured": 0., "captured_wall": 0., "detections": None,
              "score": None, "score_stamp": 0., "fatal": None, "config_received": False,
-             "decoder_threads": None, "source_fps": None}
+             "decoder_threads": None, "source_fps": None, "module_enabled": False,
+             "geometry_refresh_pending": False}
+    geometry = AiZonesConfig(args.camera, args.camera_id)
     samples = deque(maxlen=8)
     counters = {"bbox_sent": 0, "broker_echo": 0, "invalid_received": 0,
                 "scores": 0, "rtsp_reconnects": 0, "publish_errors": 0, "detections_completed": 0}
@@ -412,7 +535,9 @@ def main():
     counters.update(events_queued=0, events_pubacked=0, event_errors=0)
     last_activity = {"send": 0., "echo": 0., "detection": 0.}
     topic = "smart_vms/ai/bbox/" + args.camera
-    client_id = "tts_fight_" + uuid.uuid4().hex[:12]
+    client_id = args.client_id
+    zones_topic = f"smart_vms/cameras/{args.camera}/ai_zones/{MODULE}"
+    lines_topic = zones_topic + "/lines"
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id,
                          transport="websockets" if args.mqtt_transport == "wss" else "tcp", protocol=mqtt.MQTTv311)
     if args.mqtt_transport == "wss":
@@ -433,7 +558,8 @@ def main():
         if reason == 0:
             connected.set()
             c.subscribe([(f"smart_vms/cameras/zone/{args.zone}", 1),
-                         (f"smart_vms/cameras/company/{args.organization}", 1), (topic, 0)])
+                         (f"smart_vms/cameras/company/{args.organization}", 1), (topic, 0),
+                         (zones_topic, 1), (lines_topic, 1)])
 
     def on_subscribe(c, userdata, mid, reasons, properties):
         if any(r.is_failure for r in reasons):
@@ -452,6 +578,29 @@ def main():
             transport=args.mqtt_transport)
 
     def on_message(c, userdata, message):
+        if message.topic in (zones_topic, lines_topic):
+            try:
+                kind = "lines" if message.topic == lines_topic else "polygons"
+                with lock:
+                    changed = geometry.update(message.payload, kind)
+                    empty = not geometry.polygons if kind == "polygons" else not geometry.lines
+                    # Vùng rỗng có thể do tắt module hoặc chưa cấu hình vùng. Tạm
+                    # dừng, xin camera config mới để phân biệt; không đoán trạng thái.
+                    if changed or (empty and kind == "polygons"):
+                        state["revision"] += 1
+                        state.update(frame=None, detections=None, score=None, captured=0., score_stamp=0.)
+                        samples.clear()
+                    if empty and kind == "polygons":
+                        state.update(geometry_refresh_pending=True, enabled=False)
+                    status = geometry.status()
+                storage.write_json("zones.json", status)
+                log("geometry_updated", topic=message.topic, changed=changed, empty=empty,
+                    retained=message.retain, **status)
+                if empty and kind == "polygons":
+                    request_config()
+            except (ValueError, TypeError, KeyError) as exc:
+                log("geometry_invalid", topic=message.topic, error_type=type(exc).__name__)
+            return
         if message.topic == topic:
             try:
                 payload = json.loads(message.payload)
@@ -488,7 +637,9 @@ def main():
                     state["revision"] += 1
                     state.update(frame=None, detections=None, score=None, captured=0., score_stamp=0.)
                     samples.clear()
-                state.update(camera=camera, url=url, enabled=enabled, config_received=True)
+                state.update(camera=camera, url=url, enabled=enabled, module_enabled=enabled,
+                             geometry_refresh_pending=False, config_received=True)
+                geometry.camera_id = (camera or {}).get("id", args.camera_id)
             log("camera_config", camera=args.camera, enabled=enabled,
                 camera_id=(camera or {}).get("id"), changed=previous != current)
         except Exception as exc:
@@ -641,7 +792,8 @@ def main():
                     if gate_revision != revision:
                         fight_gate.high_since = fight_gate.low_since = fight_gate.last_stamp = None
                         gate_revision = revision
-                    people = len(event_detection["boxes"])
+                    with lock:
+                        people, event_zone = geometry.event_people(event_detection["boxes"])
                     before_active = fight_gate.active
                     triggered = fight_gate.update(score, last_stamp, time.time(), people)
                     if before_active != fight_gate.active or triggered:
@@ -657,8 +809,12 @@ def main():
                                  "entity_type": "PERSON", "entity_id": "incident_" + uuid.uuid4().hex,
                                  "confidence": score, "severity": "HIGH",
                                  "payload": {"type": "FIGHT", "person_count": people,
-                                             "person_count_scope": "visible_people_in_full_frame",
+                                             "person_count_scope": "visible_people_in_ai_zone" if event_zone else "visible_people_in_full_frame",
                                              "threshold": args.fight_threshold, "confirm_seconds": args.confirm_seconds}}
+                        if event_zone:
+                            event["payload"]["zone_name"] = event_zone["name"]
+                            if event_zone["id"]:
+                                event["payload"]["zone_id"] = event_zone["id"]
                         try:
                             event_jobs.put_nowait((event, event_detection["frame"].copy(), revision, time.monotonic()))
                             with lock:
@@ -830,6 +986,7 @@ def main():
                               "organization_id": args.organization, "zone_id": args.zone,
                               "broker_host": args.broker_host, "broker_port": args.broker_port,
                               "broker_connect_ip": args.broker_ip,
+                              "client_id": client_id, "geometry": geometry.status(),
                               "detector_target_fps": args.detector_fps, "publish_target_fps": args.publish_fps,
                               "decoder_threads": state["decoder_threads"], "source_fps": state["source_fps"],
                               "detection_hz": round((counters["detections_completed"] - previous_detections) / (tick - last_health), 2) if last_health else 0,

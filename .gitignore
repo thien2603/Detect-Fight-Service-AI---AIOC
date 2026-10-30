@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 output/
 weights/
+data/
 evidence/
 *.tar.gz
 *.mp4

@@ -1,0 +1,35 @@
+services:
+  fight:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${FIGHT_BASE_IMAGE:-pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime}
+    image: fight-service:local
+    container_name: ioc-fight-service
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    gpus: all
+    network_mode: host
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      OPENCV_LOG_LEVEL: "OFF"
+    volumes:
+      - ${FIGHT_WEIGHTS_DIR:-./weights}:/app/weights:ro
+      - ${FIGHT_OUTPUT_DIR:-./output}:/app/output
+    command: ["--events", "--fight-threshold", "0.9", "--confirm-seconds", "1", "--reset-seconds", "2", "--cooldown", "60"]
+    mem_limit: 4g
+    pids_limit: 256
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,time,pathlib,datetime; p=pathlib.Path('/app/output/health.json'); d=json.loads(p.read_text()); age=time.time()-datetime.datetime.fromisoformat(d['time']).timestamp(); assert age<40 and d['mqtt_connected']"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 90s

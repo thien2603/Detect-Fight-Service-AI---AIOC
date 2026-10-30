@@ -21,7 +21,9 @@
       "properties": {
         "type": {"const": "FIGHT"},
         "person_count": {"type": "integer", "minimum": 2},
-        "person_count_scope": {"const": "visible_people_in_full_frame"},
+        "person_count_scope": {"enum": ["visible_people_in_full_frame", "visible_people_in_ai_zone"]},
+        "zone_id": {"type": "string", "format": "uuid"},
+        "zone_name": {"type": "string"},
         "threshold": {"type": "number", "exclusiveMinimum": 0.5, "maximum": 1},
         "confirm_seconds": {"type": "number", "exclusiveMinimum": 0}
       }

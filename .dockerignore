@@ -1,0 +1,13 @@
+.git
+.env
+.venv
+output
+weights
+data
+evidence
+__pycache__
+*.mp4
+*.jpg
+*.png
+*.tar.gz
+
