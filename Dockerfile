@@ -19,4 +19,3 @@ RUN mkdir -p /app/output /app/weights && chown 1000:1000 /app /app/output /app/w
 USER 1000:1000
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["python", "-u", "run.py"]
-
