@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+output/
+weights/
+evidence/
+*.tar.gz
+*.mp4
+*.jpg
+*.png

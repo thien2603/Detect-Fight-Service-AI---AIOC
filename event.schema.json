@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local FIGHT_DETECTION event profile based on AI_MODULES_MQTT sections 5.7 and 9.4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ai_modules", "submodule_code", "camera_id", "camera_code", "event_time", "entity_type", "entity_id", "confidence", "severity", "payload", "snapshot_url"],
+  "properties": {
+    "ai_modules": {"const": "FIGHT_DETECTION"},
+    "submodule_code": {"const": "FIGHT_DETECTION"},
+    "camera_id": {"type": "string", "format": "uuid"},
+    "camera_code": {"type": "string", "minLength": 1},
+    "event_time": {"type": "string", "format": "date-time", "pattern": "\\+07:00$"},
+    "entity_type": {"const": "PERSON"},
+    "entity_id": {"type": "string", "pattern": "^incident_[0-9a-f]{32}$"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "severity": {"const": "HIGH"},
+    "snapshot_url": {"type": "string", "pattern": "^anomaly/", "maxLength": 1024},
+    "payload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "person_count", "person_count_scope", "threshold", "confirm_seconds"],
+      "properties": {
+        "type": {"const": "FIGHT"},
+        "person_count": {"type": "integer", "minimum": 2},
+        "person_count_scope": {"const": "visible_people_in_full_frame"},
+        "threshold": {"type": "number", "exclusiveMinimum": 0.5, "maximum": 1},
+        "confirm_seconds": {"type": "number", "exclusiveMinimum": 0}
+      }
+    }
+  }
+}

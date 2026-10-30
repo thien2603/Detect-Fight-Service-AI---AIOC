@@ -1,0 +1,22 @@
+[Unit]
+Description=IOC staging FIGHT_DETECTION - fullframe bbox, score and confirmed events
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/Detect-Fight-Service-AI---AIOC
+ExecStart=%h/projects/Detect-Fight-Service-AI---AIOC/.venv/bin/python -u run.py --seconds 0 --detector-fps 30 --publish-fps 30 --max-bbox-age-ms 200 --decoder-threads 1 --events --fight-threshold 0.9 --confirm-seconds 1 --reset-seconds 2 --cooldown 60
+Environment=PYTHONUNBUFFERED=1
+Environment=OPENCV_LOG_LEVEL=OFF
+Restart=always
+RestartSec=10
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+# Chỉ lưu log ứng dụng đã giới hạn ở output/log.jsonl; tránh nhân đôi dữ liệu
+# và tránh log native FFmpeg/HEVC làm journal tăng liên tục.
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target

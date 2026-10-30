@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IOC FIGHT_DETECTION bbox - edge validation profile",
+  "description": "Local strict profile derived from AI_MODULES_MQTT.md section 5.8; not a schema fetched from backend.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "camera_id",
+    "camera_code",
+    "organization_id",
+    "ai_modules",
+    "timestamp",
+    "detections",
+    "hud"
+  ],
+  "properties": {
+    "camera_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "camera_code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "organization_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ai_modules": {
+      "const": "FIGHT_DETECTION"
+    },
+    "timestamp": {
+      "type": "number",
+      "minimum": 0
+    },
+    "detections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "class",
+          "confidence",
+          "bbox"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "class": {
+            "const": "person"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "bbox": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "hud": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "display_ms",
+        "color"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "display_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        }
+      }
+    }
+  }
+}

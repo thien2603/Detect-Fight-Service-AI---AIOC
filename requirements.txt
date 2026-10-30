@@ -1,0 +1,12 @@
+# Cài torch/torchvision phù hợp CPU hoặc CUDA trước, theo https://pytorch.org/get-started/locally/
+ultralytics==8.4.190
+opencv-python==5.0.0.93
+numpy==2.5.2
+paho-mqtt==2.1.0
+requests==2.34.2
+jsonschema==4.26.0
+yacs==0.1.8
+einops==0.8.2
+fvcore==0.1.5.post20221221
+iopath==0.1.10
+python-dotenv>=1,<2
