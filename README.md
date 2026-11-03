@@ -109,6 +109,11 @@ và SOP thật tùy cấu hình backend.
 
 ## Kiểm tra
 
+Bộ 8 bài thử backend độc lập, từ cấu hình camera đến bbox, snapshot, lịch sử,
+SOP và dedup: [experiments/vms_backend/README.md](experiments/vms_backend/README.md).
+Mỗi case có `run.py` riêng, không cần GPU/model; preview mặc định trước khi
+gửi dữ liệu mẫu bằng `--send`. Không dùng event mẫu để đánh giá detection.
+
 ```bash
 python -m unittest -v test_geometry test_events test_storage
 python measure_latency.py --window 60 --instrumented
